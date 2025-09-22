@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="container">
+    <h2>Create Note</h2>
+
+    <form method="POST" action="{{ url_for('finalize_note') }}">
+        <input type="hidden" name="note_id" id="note_id" value="{{ draft_note['id'] if draft_note else '' }}">
+        
+        <div class="mb-3">
+            <label>Title</label>
+            <input type="text" class="form-control" id="title" name="title"
+                   value="{{ draft_note['title'] if draft_note else '' }}">
+        </div>
+
+        <div class="mb-3">
+            <label>Category</label>
+            <select class="form-control" id="categoryname" name="categoryname">
+                {% set selected_category = draft_note['categoryname'] if draft_note else '' %}
+                <option value="Work" {% if selected_category == "Work" %}selected{% endif %}>Work</option>
+                <option value="Personal" {% if selected_category == "Personal" %}selected{% endif %}>Personal</option>
+                <option value="Study" {% if selected_category == "Study" %}selected{% endif %}>Study</option>
+                <option value="Miscellaneous" {% if selected_category == "Miscellaneous" %}selected{% endif %}>Miscellaneous</option>
+            </select>
+        </div>
+
+        <div class="mb-3">
+            <label>Content</label>
+            <textarea class="form-control" id="content" name="content" rows="6">{{ draft_note['content'] if draft_note else '' }}</textarea>
+        </div>
+
+        <div class="mb-3 form-check">
+            <input type="checkbox" class="form-check-input" id="ispinned" name="ispinned"
+                   {% if draft_note and draft_note['ispinned'] %}checked{% endif %}>
+            <label class="form-check-label" for="ispinned">Pin this note</label>
+        </div>
+
+        <button type="submit" class="btn btn-success">Finalize Note</button>
+    </form>
+</div>
+
+<script>
+document.addEventListener("DOMContentLoaded", function () {
+    const noteId = document.getElementById("note_id").value;
+    const title = document.getElementById("title");
+    const content = document.getElementById("content");
+    const category = document.getElementById("categoryname");
+    const pinned = document.getElementById("ispinned");
+
+    function autoSave() {
+        fetch("/autosave_note", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({
+                note_id: noteId,
+                title: title.value,
+                content: content.value,
+                categoryname: category.value,
+                ispinned: pinned.checked
+            })
+        })
+        .then(res => res.json())
+        .then(data => {
+            if (data.note_id) {
+                document.getElementById("note_id").value = data.note_id;
+            }
+        });
+    }
+
+    setInterval(autoSave, 5000);
+});
+</script>
+{% endblock %}

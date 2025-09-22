@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}Add/Edit Reminder{% endblock %}
+{% block content %}
+<div class="container">
+    <h2>{{ "Edit Reminder" if reminder else "Add Reminder" }}</h2>
+
+    <form method="POST">
+        <div class="mb-3">
+            <label for="note_id">Select Note</label>
+            <select name="note_id" id="note_id" class="form-control" required>
+                <option value="">-- Select Note --</option>
+                {% for note in notes %}
+                <option value="{{ note['id'] }}" 
+                        {% if reminder and reminder['note_id'] == note['id'] %}selected{% endif %}>
+                    {{ note['title'] }}
+                </option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <div class="mb-3">
+            <label for="message">Reminder Message</label>
+            <textarea name="message" id="message" class="form-control" required>{{ reminder['message'] if reminder else '' }}</textarea>
+        </div>
+
+        <div class="mb-3">
+            <label for="reminder_time">Reminder Time</label>
+            <input type="datetime-local" name="reminder_time" id="reminder_time" 
+                   value="{{ reminder['reminder_time'] if reminder else '' }}" class="form-control" required>
+        </div>
+
+        <div class="mb-3 form-check">
+            <input type="checkbox" name="is_active" id="is_active" class="form-check-input"
+                   {% if reminder and reminder['is_active'] %}checked{% endif %}>
+            <label class="form-check-label" for="is_active">Active</label>
+        </div>
+
+        <button type="submit" class="btn btn-primary">{{ "Update" if reminder else "Add" }} Reminder</button>
+        <a href="{{ url_for('view_reminders') }}" class="btn btn-secondary">View Reminders</a>
+    </form>
+</div>
+{% endblock %}

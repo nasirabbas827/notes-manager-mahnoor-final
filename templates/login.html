@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Login{% endblock %}
+{% block content %}
+<h2>Login</h2>
+<form method="POST">
+    <label>Username:</label>
+    <input type="text" name="username" required>
+    
+    <label>Password:</label>
+    <input type="password" name="password" required>
+    
+    <button type="submit">Login</button>
+<p style='margin-top:30px;'>Don't have an account? <a href="{{ url_for('register') }}">Register here</a></p>
+
+</form>
+
+<script>
+    // After successful login, sync guest notes
+    const finalizedNotes = localStorage.getItem("guest_finalized_notes");
+    if (finalizedNotes) {
+        fetch("{{ url_for('sync_guest_notes') }}", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ notes: JSON.parse(finalizedNotes) })
+        })
+        .then(res => res.json())
+        .then(data => {
+            console.log(data.message);
+            if (data.status === "success") {
+                localStorage.removeItem("guest_finalized_notes");
+            }
+        });
+    }
+</script>
+{% endblock %}

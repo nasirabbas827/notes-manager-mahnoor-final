@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="container mt-4">
+    <h2>Edit Note</h2>
+
+    <form id="noteForm" method="POST" action="{{ url_for('finalize_note') }}">
+        <input type="hidden" name="note_id" id="note_id" value="{{ note['id'] }}">
+
+        <div class="mb-3">
+            <label for="title" class="form-label">Title</label>
+            <input type="text" id="title" name="title" class="form-control" value="{{ note['title'] }}">
+        </div>
+
+        <div class="mb-3">
+            <label for="content" class="form-label">Content</label>
+            <textarea id="content" name="content" rows="6" class="form-control">{{ note['content'] }}</textarea>
+        </div>
+
+        <div class="mb-3">
+            <label for="categoryname" class="form-label">Category</label>
+            <input type="text" id="categoryname" name="categoryname" class="form-control" value="{{ note['categoryname'] }}">
+        </div>
+
+        <div class="form-check mb-3">
+            <input type="checkbox" id="ispinned" name="ispinned" class="form-check-input" value="1" {% if note['ispinned'] %}checked{% endif %}>
+            <label for="ispinned" class="form-check-label">Pin this note</label>
+        </div>
+
+        <button type="submit" class="btn btn-success">Save & Finalize</button>
+        <a href="{{ url_for('dashboard') }}" class="btn btn-secondary">Back</a>
+    </form>
+</div>
+
+<script>
+    function autoSave() {
+        const data = {
+            note_id: document.getElementById("note_id").value,
+            title: document.getElementById("title").value,
+            content: document.getElementById("content").value,
+            categoryname: document.getElementById("categoryname").value,
+            ispinned: document.getElementById("ispinned").checked ? 1 : 0,
+            isdraft: 0  // already finalized note, stay as 0
+        };
+
+        fetch("{{ url_for('autosave_note') }}", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(data)
+        }).then(response => response.json())
+          .then(data => {
+              console.log("Auto-saved:", data);
+              document.getElementById("note_id").value = data.note_id; 
+          });
+    }
+
+    setInterval(autoSave, 5000); // every 5 seconds
+</script>
+{% endblock %}
