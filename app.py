@@ -1,4 +1,5 @@
-from flask import Flask, render_template, request, redirect, url_for, session, flash , jsonify
+from flask import Flask, render_template, request, redirect, url_for, flash, jsonify
+from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
 import sqlite3
 from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import datetime
@@ -8,6 +9,31 @@ app = Flask(__name__)
 app.secret_key = "your_secret_key"
 
 DATABASE = "notes_manager.db"
+
+# ---------------- Flask-Login Setup ----------------
+login_manager = LoginManager()
+login_manager.init_app(app)
+login_manager.login_view = 'login'  # Redirect to login page if not authenticated
+
+# User class for Flask-Login
+class User(UserMixin):
+    def __init__(self, user_id, username, email, first_name, last_name, phone):
+        self.id = user_id
+        self.username = username
+        self.email = email
+        self.first_name = first_name
+        self.last_name = last_name
+        self.phone = phone
+
+# Load user for Flask-Login
+@login_manager.user_loader
+def load_user(user_id):
+    conn = get_db_connection()
+    user = conn.execute('SELECT * FROM Users WHERE user_id = ?', (user_id,)).fetchone()
+    conn.close()
+    if user:
+        return User(user['user_id'], user['username'], user['email'], user['first_name'], user['last_name'], user['phone'])
+    return None
 
 # ---------------- Database Connection ----------------
 def get_db_connection():
@@ -20,13 +46,11 @@ def get_db_connection():
 def index():
     return render_template('index.html')
 
-
+# ---------------- Sync Guest Notes ----------------
 @app.route('/sync_guest_notes', methods=['POST'])
+@login_required
 def sync_guest_notes():
-    if 'user_id' not in session:
-        return jsonify({"status": "error", "message": "User not logged in"}), 401
-
-    user_id = session['user_id']
+    user_id = current_user.id
     notes = request.json.get("notes", [])
 
     conn = get_db_connection()
@@ -40,7 +64,6 @@ def sync_guest_notes():
         ispinned = int(note.get("ispinned", 0))
         created_at = note.get("created_at", None)
 
-        # Check for duplicates (same title, content, and category)
         cursor.execute("""
             SELECT id FROM Notes 
             WHERE user_id = ? AND title = ? AND content = ? AND categoryname = ?
@@ -71,14 +94,30 @@ def register():
         password = generate_password_hash(request.form['password'])
 
         conn = get_db_connection()
+        cursor = conn.cursor()
+
+        # Check for existing username
+        existing_user = cursor.execute('SELECT * FROM Users WHERE username = ?', (username,)).fetchone()
+        if existing_user:
+            conn.close()
+            flash("Username already exists. Please choose a different username.", "error")
+            return render_template('register.html')
+
+        # Check for existing email
+        existing_email = cursor.execute('SELECT * FROM Users WHERE email = ?', (email,)).fetchone()
+        if existing_email:
+            conn.close()
+            flash("Email already exists. Please use a different email.", "error")
+            return render_template('register.html')
+
         try:
-            conn.execute('INSERT INTO Users (username, email, first_name, last_name, phone, password_hash) VALUES (?, ?, ?, ?, ?, ?)',
-                         (username, email, first_name, last_name, phone, password))
+            cursor.execute('INSERT INTO Users (username, email, first_name, last_name, phone, password_hash) VALUES (?, ?, ?, ?, ?, ?)',
+                          (username, email, first_name, last_name, phone, password))
             conn.commit()
             flash("Registration successful! Please login.", "success")
             return redirect(url_for('login'))
-        except sqlite3.IntegrityError:
-            flash("Username or email already exists.", "error")
+        except sqlite3.Error as e:
+            flash(f"Database error: {str(e)}", "error")
         finally:
             conn.close()
     return render_template('register.html')
@@ -86,6 +125,9 @@ def register():
 # ---------------- User Login ----------------
 @app.route('/login', methods=['GET', 'POST'])
 def login():
+    if current_user.is_authenticated:
+        return redirect(url_for('dashboard'))
+
     if request.method == 'POST':
         username = request.form['username']
         password = request.form['password']
@@ -95,8 +137,8 @@ def login():
         conn.close()
 
         if user and check_password_hash(user['password_hash'], password):
-            session['user_id'] = user['user_id']
-            session['username'] = user['username']
+            user_obj = User(user['user_id'], user['username'], user['email'], user['first_name'], user['last_name'], user['phone'])
+            login_user(user_obj)
             flash(f"Welcome back, {user['username']}!", "success")
             return redirect(url_for('dashboard'))
         else:
@@ -105,43 +147,36 @@ def login():
 
 # ---------------- User Dashboard with Search ----------------
 @app.route('/dashboard', methods=['GET', 'POST'])
+@login_required
 def dashboard():
-    if not session.get('user_id'):
-        flash("Please login to access the dashboard.", "error")
-        return redirect(url_for('login'))
-
     search_query = request.form.get("search", "")
 
     conn = get_db_connection()
 
-    # Pinned notes
     pinned_notes = conn.execute('''
         SELECT * FROM Notes
         WHERE user_id = ? AND isdraft = 0 AND ispinned = 1
           AND (title LIKE ? OR content LIKE ?)
         ORDER BY updated_at DESC
-    ''', (session['user_id'], f"%{search_query}%", f"%{search_query}%")).fetchall()
+    ''', (current_user.id, f"%{search_query}%", f"%{search_query}%")).fetchall()
 
-    # Non-pinned notes
     notes = conn.execute('''
         SELECT * FROM Notes
         WHERE user_id = ? AND isdraft = 0 AND ispinned = 0
           AND (title LIKE ? OR content LIKE ?)
         ORDER BY updated_at DESC
-    ''', (session['user_id'], f"%{search_query}%", f"%{search_query}%")).fetchall()
+    ''', (current_user.id, f"%{search_query}%", f"%{search_query}%")).fetchall()
 
-    # Reminders (only active ones)
     reminders = conn.execute('''
         SELECT r.id, r.message, r.reminder_time, r.is_active, n.title as note_title
         FROM Reminders r
         JOIN Notes n ON r.note_id = n.id
         WHERE n.user_id = ? AND r.is_active = 1
         ORDER BY r.reminder_time ASC
-    ''', (session['user_id'],)).fetchall()
+    ''', (current_user.id,)).fetchall()
 
     conn.close()
 
-    # Convert sqlite3.Row → dict
     pinned_notes = [dict(row) for row in pinned_notes]
     notes = [dict(row) for row in notes]
     reminders = [dict(row) for row in reminders]
@@ -156,26 +191,21 @@ def dashboard():
 
 # ---------------- Download Notes ----------------
 @app.route('/download_notes')
+@login_required
 def download_notes():
-    if not session.get('user_id'):
-        flash("Please login to download notes.", "error")
-        return redirect(url_for('login'))
-
     conn = get_db_connection()
     notes = conn.execute(
         "SELECT title, content FROM Notes WHERE user_id = ? AND isdraft = 0 ORDER BY updated_at DESC",
-        (session['user_id'],)
+        (current_user.id,)
     ).fetchall()
     conn.close()
 
-    # Create .txt file content
     content = ""
     for note in notes:
         content += f"Title: {note['title']}\n"
         content += f"Content:\n{note['content']}\n"
         content += "-" * 50 + "\n\n"
 
-    # Send file as download
     from flask import Response
     return Response(
         content,
@@ -185,23 +215,20 @@ def download_notes():
 
 # ---------------- User Logout ----------------
 @app.route('/logout')
+@login_required
 def logout():
-    if session.get('username'):
-        flash(f"Goodbye, {session.get('username')}! You have been logged out.", "success")
-    session.clear()
+    flash(f"Goodbye, {current_user.username}! You have been logged out.", "success")
+    logout_user()
     return redirect(url_for('index'))
 
 # ---------------- Edit Note ----------------
 @app.route('/edit_note/<int:note_id>', methods=['GET'])
+@login_required
 def edit_note(note_id):
-    if not session.get('user_id'):
-        flash("Please login to edit notes.", "error")
-        return redirect(url_for('login'))
-
     conn = get_db_connection()
     note = conn.execute(
         'SELECT * FROM Notes WHERE id = ? AND user_id = ?',
-        (note_id, session['user_id'])
+        (note_id, current_user.id)
     ).fetchone()
     conn.close()
 
@@ -213,57 +240,51 @@ def edit_note(note_id):
 
 # ---------------- Create Note ----------------
 @app.route('/create_note', methods=['GET'])
+@login_required
 def create_note():
-    if not session.get('user_id'):
-        flash("Please login to create notes.", "error")
-        return redirect(url_for('login'))
-
     conn = get_db_connection()
     draft_note = conn.execute('''
         SELECT * FROM Notes 
         WHERE user_id = ? AND isdraft = 1 
         ORDER BY updated_at DESC LIMIT 1
-    ''', (session['user_id'],)).fetchone()
+    ''', (current_user.id,)).fetchone()
     conn.close()
 
     return render_template('create_note.html', draft_note=draft_note)
 
 # ---------------- Auto-save Note API ----------------
 @app.route('/autosave_note', methods=['POST'])
+@login_required
 def autosave_note():
-    if not session.get('user_id'):
-        return jsonify({'status': 'error', 'message': 'User not logged in'}), 403
-
     data = request.get_json()
-    title = data.get('title', '').strip()  # no Untitled default
+    title = data.get('title', '').strip()
     content = data.get('content', '').strip()
     categoryname = data.get('categoryname', 'Miscellaneous')
     ispinned = 1 if data.get('ispinned') else 0
-    isdraft = 1  # autosave always stores as draft
+    isdraft = 1
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     conn = get_db_connection()
     cursor = conn.cursor()
 
-    # Check for existing draft note
     existing_draft = cursor.execute('''
         SELECT id FROM Notes 
         WHERE user_id = ? AND isdraft = 1 
         ORDER BY updated_at DESC LIMIT 1
-    ''', (session['user_id'],)).fetchone()
+    ''', (current_user.id,)).fetchone()
 
-    if existing_draft:  # update existing draft
+    if existing_draft:
         note_id = existing_draft['id']
         cursor.execute('''
             UPDATE Notes
             SET title = ?, content = ?, categoryname = ?, ispinned = ?, isdraft = ?, updated_at = ?
             WHERE id = ? AND user_id = ?
-        ''', (title, content, categoryname, ispinned, isdraft, now, note_id, session['user_id']))
-    else:  # insert new draft
+        ''', (title, content, categoryname, ispinned, isdraft, now, note_id, current_user.id))
+    else:
         cursor.execute('''
             INSERT INTO Notes (user_id, title, content, categoryname, ispinned, isdraft, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (session['user_id'], title, content, categoryname, ispinned, isdraft, now, now))
+        ''', (current_user.id, title, content, categoryname, ispinned, isdraft, now, now))
         note_id = cursor.lastrowid
 
     conn.commit()
@@ -273,11 +294,8 @@ def autosave_note():
 
 # ---------------- Finalize Note ----------------
 @app.route('/finalize_note', methods=['POST'])
+@login_required
 def finalize_note():
-    if not session.get('user_id'):
-        flash("Please login to finalize notes.", "error")
-        return redirect(url_for('login'))
-
     note_id = request.form.get('note_id')
     if not note_id:
         flash("No draft note found to finalize.", "error")
@@ -289,7 +307,7 @@ def finalize_note():
         UPDATE Notes
         SET isdraft = 0, updated_at = ?
         WHERE id = ? AND user_id = ?
-    ''', (now, note_id, session['user_id']))
+    ''', (now, note_id, current_user.id))
     conn.commit()
     conn.close()
 
@@ -298,13 +316,10 @@ def finalize_note():
 
 # ---------------- Delete Note ----------------
 @app.route('/delete_note/<int:note_id>', methods=['POST'])
+@login_required
 def delete_note(note_id):
-    if not session.get('user_id'):
-        flash("Please login to delete notes.", "error")
-        return redirect(url_for('login'))
-
     conn = get_db_connection()
-    conn.execute('DELETE FROM Notes WHERE id = ? AND user_id = ?', (note_id, session['user_id']))
+    conn.execute('DELETE FROM Notes WHERE id = ? AND user_id = ?', (note_id, current_user.id))
     conn.commit()
     conn.close()
 
@@ -314,11 +329,8 @@ def delete_note(note_id):
 # ---------------- Add / Edit Reminder ----------------
 @app.route('/add_reminder', methods=['GET', 'POST'])
 @app.route('/add_reminder/<int:reminder_id>', methods=['GET', 'POST'])
+@login_required
 def add_reminder(reminder_id=None):
-    if not session.get('user_id'):
-        flash("Please login to manage reminders.", "error")
-        return redirect(url_for('login'))
-
     conn = get_db_connection()
     cursor = conn.cursor()
 
@@ -330,7 +342,7 @@ def add_reminder(reminder_id=None):
             JOIN Notes n ON r.note_id = n.id
             WHERE r.id = ? 
               AND n.user_id = ?
-        ''', (reminder_id, session['user_id'])).fetchone()
+        ''', (reminder_id, current_user.id)).fetchone()
 
         if not reminder:
             conn.close()
@@ -361,23 +373,17 @@ def add_reminder(reminder_id=None):
         conn.close()
         return redirect(url_for('view_reminders'))
 
-    # Fetch all notes (only finalized notes)
     notes = cursor.execute('''
         SELECT id, title FROM Notes WHERE user_id = ? AND isdraft = 0
-    ''', (session['user_id'],)).fetchall()
+    ''', (current_user.id,)).fetchall()
     conn.close()
 
     return render_template("add_reminder.html", reminder=reminder, notes=notes)
 
-
-
 # ---------------- View Reminders ----------------
 @app.route('/view_reminders', methods=['GET', 'POST'])
+@login_required
 def view_reminders():
-    if not session.get('user_id'):
-        flash("Please login to view reminders.", "error")
-        return redirect(url_for('login'))
-
     search_query = request.form.get("search", "")
 
     conn = get_db_connection()
@@ -389,7 +395,7 @@ def view_reminders():
             WHERE n.user_id = ? 
               AND (r.message LIKE ? OR n.title LIKE ?)
             ORDER BY r.reminder_time ASC
-        ''', (session['user_id'], f"%{search_query}%", f"%{search_query}%")).fetchall()
+        ''', (current_user.id, f"%{search_query}%", f"%{search_query}%")).fetchall()
     else:
         reminders = conn.execute('''
             SELECT r.*, n.title AS note_title 
@@ -397,32 +403,27 @@ def view_reminders():
             JOIN Notes n ON r.note_id = n.id
             WHERE n.user_id = ?
             ORDER BY r.reminder_time ASC
-        ''', (session['user_id'],)).fetchall()
+        ''', (current_user.id,)).fetchall()
     conn.close()
 
     return render_template("view_reminder.html", reminders=reminders, search_query=search_query)
 
-
 # ---------------- Delete Reminder ----------------
 @app.route('/delete_reminder/<int:reminder_id>', methods=['POST'])
+@login_required
 def delete_reminder(reminder_id):
-    if not session.get('user_id'):
-        flash("Please login to delete reminders.", "error")
-        return redirect(url_for('login'))
-
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('''
         DELETE FROM Reminders 
         WHERE id = ? 
           AND note_id IN (SELECT id FROM Notes WHERE user_id = ?)
-    ''', (reminder_id, session['user_id']))
+    ''', (reminder_id, current_user.id))
     conn.commit()
     conn.close()
 
     flash("Reminder deleted successfully!", "success")
     return redirect(url_for('view_reminders'))
-
 
 # ---------------- Run ----------------
 if __name__ == '__main__':
